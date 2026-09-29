@@ -65,14 +65,14 @@ def generate_masks(json_path, non_fractured_dir, output_dir):
 
 if __name__ == "__main__":
     # ĐƯỜNG DẪN DÀNH CHO KAGGLE
-    # JSON_PATH = "/kaggle/input/fracatlas-original-dataset/FracAtlas/Annotations/COCO JSON/Annotations.json" 
-    # NON_FRACTURED_DIR = "/kaggle/input/fracatlas-original-dataset/FracAtlas/images/Non_fractured"
-    # OUTPUT_MASKS_DIR = "/kaggle/working/Masks"
+    JSON_PATH = "/kaggle/input/fracatlas-original-dataset/FracAtlas/Annotations/COCO JSON/COCO_fracture_masks.json" 
+    NON_FRACTURED_DIR = "/kaggle/input/fracatlas-original-dataset/FracAtlas/images/Non_fractured"
+    OUTPUT_MASKS_DIR = "/kaggle/working/Masks"
     
 
     # Đường dẫn dành cho môi trường laptop cá nhân
-    JSON_PATH = "../FracAtlas/Annotations/COCO JSON/COCO_fracture_masks.json" 
-    NON_FRACTURED_DIR = "../FracAtlas/images/Non_fractured"
-    OUTPUT_MASKS_DIR = "./Masks"
+    # JSON_PATH = "../FracAtlas/Annotations/COCO JSON/COCO_fracture_masks.json" 
+    # NON_FRACTURED_DIR = "../FracAtlas/images/Non_fractured"
+    # OUTPUT_MASKS_DIR = "./Masks"
     
     generate_masks(JSON_PATH, NON_FRACTURED_DIR, OUTPUT_MASKS_DIR)
