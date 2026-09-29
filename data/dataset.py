@@ -30,19 +30,23 @@ class FracAtlasDataset(Dataset):
         img_name = self.image_names[idx]
         
         image = Image.open(img_path).convert('RGB')
+        # [QUAN TRỌNG] Đưa tất cả ảnh về cùng 1 kích thước để gom thành Batch
+        target_size = (512, 512)
+        image = image.resize(target_size, resample=Image.BILINEAR)
         
         mask = None
         if self.mask_dir is not None:
-            # Mask_dir của bạn là thư mục phẳng, nên chỉ cần ghép với img_name
             mask_path = os.path.join(self.mask_dir, img_name)
             if os.path.exists(mask_path):
                 try:
                     mask = Image.open(mask_path).convert('L')
+                    # Mask phải dùng NEAREST để giữ nguyên giá trị 0/255 (tránh nội suy ra số thực)
+                    mask = mask.resize(target_size, resample=Image.NEAREST)
                     mask = np.array(mask)
                     mask = (mask > 127).astype(np.int64) 
                     mask = torch.as_tensor(mask)
                 except Exception:
-                    mask = torch.zeros((image.size[1], image.size[0]), dtype=torch.int64)
+                    mask = torch.zeros(target_size[::-1], dtype=torch.int64) # (H, W)
                 
         image = np.array(image)
         if self.transform is not None:
