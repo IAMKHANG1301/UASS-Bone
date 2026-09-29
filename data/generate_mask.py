@@ -67,7 +67,7 @@ if __name__ == "__main__":
     # ĐƯỜNG DẪN DÀNH CHO KAGGLE
     JSON_PATH = "/kaggle/input/datasets/mahmudulhasantasin/fracatlas-original-dataset/FracAtlas/Annotations/COCO JSON/COCO_fracture_masks.json" 
     NON_FRACTURED_DIR = "/kaggle/input/datasets/mahmudulhasantasin/fracatlas-original-dataset/FracAtlas/images/Non_fractured"
-    OUTPUT_MASKS_DIR = "/kaggle/working/data/masks"
+    OUTPUT_MASKS_DIR = "/kaggle/working/masks"
     
 
     # Đường dẫn dành cho môi trường laptop cá nhân
