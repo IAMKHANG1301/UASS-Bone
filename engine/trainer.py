@@ -32,13 +32,14 @@ def train_offline_semi_supervised(
     lambda_max = 1.0
     alpha_ema = 0.99
     global_step = 0
+    accumulation_steps = 4
     
     for epoch in range(epochs):
         lambda_t = get_gaussian_rampup_weight(epoch, T_ramp, lambda_max)
+        optimizer.zero_grad()
         
-        for (x_l, y_l), (x_u, _) in zip(labeled_loader, unlabeled_loader):
+        for i, ((x_l, y_l), (x_u, _)) in enumerate(zip(labeled_loader, unlabeled_loader)):
             x_l, y_l, x_u = x_l.to(device), y_l.to(device), x_u.to(device)
-            optimizer.zero_grad()
             
             # [HACK]: Tạm thời tắt cờ training ở cấp cao nhất để Mask2Former 
             # chạy nhánh suy luận (trả về sem_seg thay vì tự tính loss)
@@ -67,11 +68,15 @@ def train_offline_semi_supervised(
             loss_unsup = criterion_unsup(logits_u_student, logits_u_teacher)
             
             # [TỔI ƯU]
-            total_loss = loss_sup + lambda_t * loss_unsup
+            total_loss = (loss_sup + lambda_t * loss_unsup) / accumulation_steps
             total_loss.backward()
-            optimizer.step()
             
-            update_ema_variables(student_model, teacher_model, alpha_ema, global_step)
-            global_step += 1
+            # CẬP NHẬT TRỌNG SỐ (GRADIENT ACCUMULATION)
+            if (i + 1) % accumulation_steps == 0 or (i + 1) == len(labeled_loader):
+                optimizer.step()
+                optimizer.zero_grad()
+                
+                update_ema_variables(student_model, teacher_model, alpha_ema, global_step)
+                global_step += 1
             
         print(f"Epoch [{epoch}/{epochs}] | L_sup: {loss_sup.item():.4f} | L_unsup: {loss_unsup.item():.4f} | Lambda: {lambda_t:.4f}")

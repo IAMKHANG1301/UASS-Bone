@@ -53,10 +53,10 @@ def main():
         
         # NOTE: Để demo, dùng chung full_dataset cho cả tập có nhãn (D_L) và không nhãn (D_U).
         # Trong thực tế, bạn sẽ chia split dataset ra làm 2 phần.
-        train_loader = DataLoader(full_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate)
-        unlabeled_loader = DataLoader(full_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate)
+        train_loader = DataLoader(full_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
+        unlabeled_loader = DataLoader(full_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
         
-        optimizer = torch.optim.Adam(specialist_model.parameters(), lr=1e-4)
+        optimizer = torch.optim.Adam(specialist_model.parameters(), lr=5e-5)
         
         train_offline_semi_supervised(
             student_model=specialist_model, 
