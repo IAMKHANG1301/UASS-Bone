@@ -1,7 +1,64 @@
 import torch
 import numpy as np
-from models.losses import SupervisedLoss, UnsupervisedConsistencyLoss
+import torch.nn.functional as F
+from models.losses import SupervisedLoss, UnsupervisedConsistencyLoss, SAMGuidedSoftLoss
 from data.dataset import get_perturbations
+
+def get_sam_pseudo_labels_and_uncertainty(sam_model, images, student_masks, n_prompts=4):
+    """
+    Input:
+    - images: [B, 3, H, W], torch.float32, on GPU
+    - student_masks: [B, 1, H, W], torch.float32, on GPU (đã qua sigmoid/clamp)
+    Output:
+    - pseudo_labels: [B, 1, H, W], torch.float32
+    - uncertainty_maps: [B, 1, H, W], torch.float32
+    """
+    B, C, H, W = images.shape
+    device = images.device
+    sam_masks = []
+    
+    with torch.no_grad(): # CHÚ Ý: Chặn toàn bộ đạo hàm
+        prompt_size = (256, 256)
+        resized_masks = F.interpolate(student_masks, size=prompt_size, mode='bilinear', align_corners=False)
+        
+        # Lưu ý: Tuỳ thuộc vào sam_model implementation, đầu vào có thể cần chuẩn hóa đặc biệt.
+        # Ở đây giả sử sam_model.image_encoder mong đợi [B, 3, 256, 256] hoặc tương tự
+        # Chúng ta resize images về prompt_size để feed vào image_encoder cho đồng bộ (hoặc giữ nguyên nếu SAM xử lý linh hoạt).
+        # Cách chuẩn nhất theo pseudo code của SemiSAM+:
+        resized_images = F.interpolate(images, size=prompt_size, mode='bilinear', align_corners=False)
+        image_embeddings = sam_model.image_encoder(resized_images) 
+        
+        for _ in range(n_prompts):
+            # Tạo nhiễu Gaussian để sinh các prompt khác nhau
+            noise = torch.randn_like(resized_masks) * 0.1
+            prompt_mask = torch.clamp(resized_masks + noise, 0.0, 1.0)
+            
+            # Đưa prompt mask qua bộ mã hóa của SAM
+            sparse_embeds, dense_embeds = sam_model.prompt_encoder(
+                points=None, boxes=None, masks=prompt_mask
+            )
+            
+            # Giải mã
+            low_res_masks, _ = sam_model.mask_decoder(
+                image_embeddings=image_embeddings,
+                image_pe=sam_model.prompt_encoder.get_dense_pe(),
+                sparse_prompt_embeddings=sparse_embeds,
+                dense_prompt_embeddings=dense_embeds,
+                multimask_output=False,
+            )
+            
+            # Trả về kích thước gốc [H, W] và ép xác suất [0, 1]
+            mask_up = F.interpolate(low_res_masks, size=(H, W), mode='bilinear', align_corners=False)
+            sam_masks.append(torch.sigmoid(mask_up))
+            
+    # Xếp chồng: [n_prompts, B, 1, H, W]
+    sam_masks_tensor = torch.stack(sam_masks, dim=0)
+    
+    # Tính trung bình (Nhãn giả) và phương sai (Độ bất định)
+    pseudo_labels = torch.mean(sam_masks_tensor, dim=0) # [B, 1, H, W]
+    uncertainty_maps = torch.var(sam_masks_tensor, dim=0) # [B, 1, H, W]
+    
+    return pseudo_labels, uncertainty_maps
 
 def get_gaussian_rampup_weight(current_epoch, Tramp, lambda_max, gamma=5.0):
     if current_epoch >= Tramp:
@@ -14,7 +71,7 @@ def update_ema_variables(student_model, teacher_model, alpha, global_step):
         ema_param.data.mul_(alpha).add_(param.data, alpha=1 - alpha)
 
 def train_offline_semi_supervised(
-    student_model, teacher_model, 
+    student_model, teacher_model, sam_model,
     labeled_loader, unlabeled_loader, 
     optimizer, epochs, device
 ):
@@ -26,24 +83,24 @@ def train_offline_semi_supervised(
         
     criterion_sup = SupervisedLoss().to(device)
     criterion_unsup = UnsupervisedConsistencyLoss().to(device)
+    criterion_sam = SAMGuidedSoftLoss().to(device)
     eta_s, eta_t = get_perturbations()
     
     T_ramp = 20
     lambda_max = 1.0
+    beta_max = 0.5
     alpha_ema = 0.99
     global_step = 0
     accumulation_steps = 4
     
     for epoch in range(epochs):
         lambda_t = get_gaussian_rampup_weight(epoch, T_ramp, lambda_max)
+        beta_t = get_gaussian_rampup_weight(epoch, T_ramp, beta_max)
         optimizer.zero_grad()
         
         for i, ((x_l, y_l), (x_u, _)) in enumerate(zip(labeled_loader, unlabeled_loader)):
             x_l, y_l, x_u = x_l.to(device), y_l.to(device), x_u.to(device)
             
-            # [HACK]: Tạm thời tắt cờ training ở cấp cao nhất để Mask2Former 
-            # chạy nhánh suy luận (trả về sem_seg thay vì tự tính loss)
-            # nhưng các lớp bên dưới (BatchNorm, Dropout) vẫn giữ trạng thái train.
             student_model.training = False
             
             # [LUỒNG 1]: CÓ GIÁM SÁT
@@ -58,7 +115,6 @@ def train_offline_semi_supervised(
             outputs_u_student = student_model([{"image": img} for img in x_u_s])
             logits_u_student = torch.stack([out["sem_seg"] for out in outputs_u_student])
             
-            # Bật lại cờ training
             student_model.training = True
             
             with torch.no_grad():
@@ -67,11 +123,29 @@ def train_offline_semi_supervised(
                 
             loss_unsup = criterion_unsup(logits_u_student, logits_u_teacher)
             
+            # [BẮT ĐẦU LUỒNG SEMISAM+]
+            # 1. Chuyển X-quang 1 kênh sang 3 kênh cho SAM. Ảnh hiện tại x_u có shape [B, 3, H, W] do dataset RGB,
+            # Tuy nhiên, theo lý thuyết x_u phải là [B, 3, H, W] chuẩn.
+            # Vì ta load ảnh `.convert('RGB')` trong dataset, nên nó đã là 3 kênh, ta dùng trực tiếp.
+            x_u_sam = x_u
+            
+            # 2. Ngắt Gradient của Specialist mask
+            # Đảm bảo logits_u_student đưa về khoảng [0, 1] nếu cần thiết
+            coarse_mask = torch.clamp(logits_u_student.detach(), 1e-7, 1.0 - 1e-7)
+            
+            # 3. Sinh nhãn giả và bất định
+            sam_pseudo, sam_uncertainty = get_sam_pseudo_labels_and_uncertainty(
+                sam_model, x_u_sam, coarse_mask, n_prompts=4
+            )
+            
+            # 4. Tính L_sam
+            loss_sam = criterion_sam(logits_u_student, sam_pseudo, sam_uncertainty)
+            # [KẾT THÚC LUỒNG SEMISAM+]
+            
             # [TỔI ƯU]
-            total_loss = (loss_sup + lambda_t * loss_unsup) / accumulation_steps
+            total_loss = (loss_sup + (lambda_t * loss_unsup) + (beta_t * loss_sam)) / accumulation_steps
             total_loss.backward()
             
-            # CẬP NHẬT TRỌNG SỐ (GRADIENT ACCUMULATION)
             if (i + 1) % accumulation_steps == 0 or (i + 1) == len(labeled_loader):
                 optimizer.step()
                 optimizer.zero_grad()
@@ -79,4 +153,4 @@ def train_offline_semi_supervised(
                 update_ema_variables(student_model, teacher_model, alpha_ema, global_step)
                 global_step += 1
             
-        print(f"Epoch [{epoch}/{epochs}] | L_sup: {loss_sup.item():.4f} | L_unsup: {loss_unsup.item():.4f} | Lambda: {lambda_t:.4f}")
+        print(f"Epoch [{epoch}/{epochs}] | L_sup: {loss_sup.item():.4f} | L_unsup: {loss_unsup.item():.4f} | L_sam: {loss_sam.item():.4f} | Lambda: {lambda_t:.4f}")

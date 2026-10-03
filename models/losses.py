@@ -36,3 +36,30 @@ class UnsupervisedConsistencyLoss(nn.Module):
         student_probs = torch.clamp(student_probs, min=1e-7, max=1.0 - 1e-7)
         teacher_probs = torch.clamp(teacher_probs, min=1e-7, max=1.0 - 1e-7)
         return self.mse(student_probs, teacher_probs)
+
+class SAMGuidedSoftLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # Không dùng reduction='mean' để tự tính trung bình theo trọng số
+        self.mse = nn.MSELoss(reduction='none') 
+        
+    def forward(self, preds, targets, uncertainties):
+        """
+        preds, targets, uncertainties: [B, 1, H, W], dtype torch.float32
+        """
+        # Ép kiểu an toàn
+        preds = preds.float()
+        targets = targets.float()
+        uncertainties = uncertainties.float()
+        
+        # 1. Tính sai số bình phương từng pixel
+        pixel_loss = self.mse(preds, targets) # [B, 1, H, W]
+        
+        # 2. Cơ chế Soft Masking: Phân phối trọng số liên tục
+        soft_weights = torch.exp(-uncertainties) # [B, 1, H, W]
+        
+        # 3. Tính toán mất mát có chọn lọc vùng
+        weighted_loss = pixel_loss * soft_weights # [B, 1, H, W]
+        
+        # 4. Trả về giá trị vô hướng (Scalar Tensor)
+        return weighted_loss.sum() / (soft_weights.sum() + 1e-8)

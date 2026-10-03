@@ -14,6 +14,7 @@ from data.dataset import FracAtlasDataset, custom_collate
 from models.specialist import setup_config, build_specialist_model
 from engine.trainer import train_offline_semi_supervised
 from engine.inference import run_inference
+from segment_anything import sam_model_registry
 
 def main():
     parser = argparse.ArgumentParser(description="Chạy Pipeline Specialist cho luận văn (Huấn luyện & Suy luận).")
@@ -21,6 +22,7 @@ def main():
     parser.add_argument("--image_dir", type=str, required=True, help="Đường dẫn đến thư mục chứa ảnh X-quang")
     parser.add_argument("--mask_dir", type=str, default=None, help="Đường dẫn đến thư mục chứa ảnh mask nhãn (tuỳ chọn)")
     parser.add_argument("--weight_path", type=str, default="specialist_teacher_model.pth", help="Đường dẫn lưu/nạp trọng số mô hình (.pth)")
+    parser.add_argument("--sam_checkpoint", type=str, default="sam_vit_b.pth", help="Đường dẫn checkpoint của SAM (Generalist)")
     parser.add_argument("--epochs", type=int, default=5, help="Số lượng epochs huấn luyện")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Thiết bị tính toán")
     
@@ -45,11 +47,18 @@ def main():
     
     if args.mode == "train":
         print("\n=======================================================")
-        print("🚀 BẮT ĐẦU GIAI ĐOẠN 3: HUẤN LUYỆN BÁN GIÁM SÁT (OFFLINE)")
+        print("🚀 BẮT ĐẦU GIAI ĐOẠN 3: HUẤN LUYỆN BÁN GIÁM SÁT (OFFLINE) + SAM GUIDANCE")
         print("=======================================================")
         
         teacher_model = copy.deepcopy(specialist_model)
         teacher_model.to(args.device)
+        
+        # Khởi tạo Generalist Model (SAM)
+        print(f"🧠 Khởi tạo Generalist (SAM) từ {args.sam_checkpoint}...")
+        sam_model = sam_model_registry["vit_b"](checkpoint=args.sam_checkpoint).to(args.device)
+        sam_model.eval() # Chế độ suy luận (Frozen)
+        for param in sam_model.parameters():
+            param.requires_grad = False
         
         # NOTE: Để demo, dùng chung full_dataset cho cả tập có nhãn (D_L) và không nhãn (D_U).
         # Trong thực tế, bạn sẽ chia split dataset ra làm 2 phần.
@@ -60,7 +69,8 @@ def main():
         
         train_offline_semi_supervised(
             student_model=specialist_model, 
-            teacher_model=teacher_model, 
+            teacher_model=teacher_model,
+            sam_model=sam_model,
             labeled_loader=train_loader, 
             unlabeled_loader=unlabeled_loader, 
             optimizer=optimizer, 
