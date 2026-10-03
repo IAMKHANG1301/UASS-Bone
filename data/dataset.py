@@ -64,9 +64,12 @@ class FracAtlasDataset(Dataset):
         return dataset_dict
 
 def get_perturbations():
-    """Tạo 2 hàm nhiễu độc lập (eta_s, eta_t) cho Học viên và Giáo viên"""
-    eta_s = T.Compose([T.RandomApply([T.ColorJitter(0.2, 0.2)], p=0.5), T.RandomAffine(degrees=10, translate=(0.05, 0.05))])
-    eta_t = T.Compose([T.RandomApply([T.ColorJitter(0.1, 0.1)], p=0.5), T.RandomAffine(degrees=5, translate=(0.02, 0.02))])
+    """Tạo 2 hàm nhiễu độc lập (eta_s, eta_t) cho Học viên và Giáo viên.
+    Chỉ dùng nhiễu màu sắc (ColorJitter) để KHÔNG làm thay đổi tọa độ không gian (Geometric Transform),
+    đảm bảo MSE Loss tính toán chính xác từng điểm ảnh.
+    """
+    eta_s = T.Compose([T.RandomApply([T.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8), T.RandomGrayscale(p=0.2)])
+    eta_t = T.Compose([T.RandomApply([T.ColorJitter(0.2, 0.2, 0.2, 0.1)], p=0.8)])
     return eta_s, eta_t
 
 def custom_collate(batch):

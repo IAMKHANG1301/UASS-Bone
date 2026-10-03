@@ -24,8 +24,9 @@ def get_sam_pseudo_labels_and_uncertainty(sam_model, images, student_masks, n_pr
         # Lưu ý: Tuỳ thuộc vào sam_model implementation, đầu vào có thể cần chuẩn hóa đặc biệt.
         # Ở đây giả sử sam_model.image_encoder mong đợi [B, 3, 256, 256] hoặc tương tự
         # Chúng ta resize images về prompt_size để feed vào image_encoder cho đồng bộ (hoặc giữ nguyên nếu SAM xử lý linh hoạt).
-        # Cách chuẩn nhất theo pseudo code của SemiSAM+:
-        resized_images = F.interpolate(images, size=prompt_size, mode='bilinear', align_corners=False)
+        # SAM ViT-B tiêu chuẩn mong đợi ảnh đầu vào kích thước 1024x1024
+        sam_image_size = (1024, 1024)
+        resized_images = F.interpolate(images, size=sam_image_size, mode='bilinear', align_corners=False)
         image_embeddings = sam_model.image_encoder(resized_images) 
         
         for _ in range(n_prompts):
@@ -67,8 +68,12 @@ def get_gaussian_rampup_weight(current_epoch, Tramp, lambda_max, gamma=5.0):
 
 def update_ema_variables(student_model, teacher_model, alpha, global_step):
     alpha = min(1 - 1 / (global_step + 1), alpha)
+    # Update parameters
     for ema_param, param in zip(teacher_model.parameters(), student_model.parameters()):
         ema_param.data.mul_(alpha).add_(param.data, alpha=1 - alpha)
+    # Update buffers (BN stats, v.v.)
+    for ema_buffer, buffer in zip(teacher_model.buffers(), student_model.buffers()):
+        ema_buffer.data.copy_(buffer.data)
 
 def train_offline_semi_supervised(
     student_model, teacher_model, sam_model,
@@ -105,33 +110,32 @@ def train_offline_semi_supervised(
             
             # [LUỒNG 1]: CÓ GIÁM SÁT
             outputs_l = student_model([{"image": img} for img in x_l])
-            logits_l_mask = torch.stack([out["sem_seg"] for out in outputs_l])
-            loss_sup = criterion_sup(logits_l_mask, y_l)
+            probs_l_mask = torch.stack([out["sem_seg"] for out in outputs_l])
+            loss_sup = criterion_sup(probs_l_mask, y_l)
             
             # [LUỒNG 2]: PHI GIÁM SÁT
             x_u_s = eta_s(x_u)
             x_u_t = eta_t(x_u)
             
             outputs_u_student = student_model([{"image": img} for img in x_u_s])
-            logits_u_student = torch.stack([out["sem_seg"] for out in outputs_u_student])
+            probs_u_student = torch.stack([out["sem_seg"] for out in outputs_u_student])
             
             student_model.training = True
             
             with torch.no_grad():
                 outputs_u_teacher = teacher_model([{"image": img} for img in x_u_t])
-                logits_u_teacher = torch.stack([out["sem_seg"] for out in outputs_u_teacher])
+                probs_u_teacher = torch.stack([out["sem_seg"] for out in outputs_u_teacher])
                 
-            loss_unsup = criterion_unsup(logits_u_student, logits_u_teacher)
+            loss_unsup = criterion_unsup(probs_u_student, probs_u_teacher)
             
             # [BẮT ĐẦU LUỒNG SEMISAM+]
-            # 1. Chuyển X-quang 1 kênh sang 3 kênh cho SAM. Ảnh hiện tại x_u có shape [B, 3, H, W] do dataset RGB,
-            # Tuy nhiên, theo lý thuyết x_u phải là [B, 3, H, W] chuẩn.
-            # Vì ta load ảnh `.convert('RGB')` trong dataset, nên nó đã là 3 kênh, ta dùng trực tiếp.
-            x_u_sam = x_u
+            # 1. Chuyển X-quang 1 kênh sang 3 kênh cho SAM.
+            # RẤT QUAN TRỌNG: SAM phải dùng chung ảnh đã qua augmentation (x_u_s)
+            # để đảm bảo cùng hệ tọa độ không gian với mạng Student.
+            x_u_sam = x_u_s
             
             # 2. Ngắt Gradient của Specialist mask
-            # Đảm bảo logits_u_student đưa về khoảng [0, 1] nếu cần thiết
-            coarse_mask = torch.clamp(logits_u_student.detach(), 1e-7, 1.0 - 1e-7)
+            coarse_mask = torch.clamp(probs_u_student.detach(), 1e-7, 1.0 - 1e-7)
             
             # 3. Sinh nhãn giả và bất định
             sam_pseudo, sam_uncertainty = get_sam_pseudo_labels_and_uncertainty(
@@ -139,7 +143,7 @@ def train_offline_semi_supervised(
             )
             
             # 4. Tính L_sam
-            loss_sam = criterion_sam(logits_u_student, sam_pseudo, sam_uncertainty)
+            loss_sam = criterion_sam(probs_u_student, sam_pseudo, sam_uncertainty)
             # [KẾT THÚC LUỒNG SEMISAM+]
             
             # [TỔI ƯU]

@@ -60,10 +60,17 @@ def main():
         for param in sam_model.parameters():
             param.requires_grad = False
         
-        # NOTE: Để demo, dùng chung full_dataset cho cả tập có nhãn (D_L) và không nhãn (D_U).
-        # Trong thực tế, bạn sẽ chia split dataset ra làm 2 phần.
-        train_loader = DataLoader(full_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
-        unlabeled_loader = DataLoader(full_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
+        # Chia dataset thành tập Labeled (20%) và Unlabeled (80%)
+        total_len = len(full_dataset)
+        labeled_len = int(0.2 * total_len)
+        unlabeled_len = total_len - labeled_len
+        labeled_dataset, unlabeled_dataset = torch.utils.data.random_split(
+            full_dataset, [labeled_len, unlabeled_len]
+        )
+        print(f"🔀 Đã chia dữ liệu: {labeled_len} Labeled | {unlabeled_len} Unlabeled")
+        
+        train_loader = DataLoader(labeled_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
+        unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
         
         optimizer = torch.optim.Adam(specialist_model.parameters(), lr=5e-5)
         
