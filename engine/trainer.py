@@ -15,49 +15,54 @@ def get_sam_pseudo_labels_and_uncertainty(sam_model, images, student_masks, n_pr
     """
     B, C, H, W = images.shape
     device = images.device
-    sam_masks = []
+    
+    batch_pseudo_labels = []
+    batch_uncertainties = []
     
     with torch.no_grad(): # CHÚ Ý: Chặn toàn bộ đạo hàm
         prompt_size = (256, 256)
-        resized_masks = F.interpolate(student_masks, size=prompt_size, mode='bilinear', align_corners=False)
-        
-        # Lưu ý: Tuỳ thuộc vào sam_model implementation, đầu vào có thể cần chuẩn hóa đặc biệt.
-        # Ở đây giả sử sam_model.image_encoder mong đợi [B, 3, 256, 256] hoặc tương tự
-        # Chúng ta resize images về prompt_size để feed vào image_encoder cho đồng bộ (hoặc giữ nguyên nếu SAM xử lý linh hoạt).
-        # SAM ViT-B tiêu chuẩn mong đợi ảnh đầu vào kích thước 1024x1024
         sam_image_size = (1024, 1024)
-        resized_images = F.interpolate(images, size=sam_image_size, mode='bilinear', align_corners=False)
-        image_embeddings = sam_model.image_encoder(resized_images) 
         
-        for _ in range(n_prompts):
-            # Tạo nhiễu Gaussian để sinh các prompt khác nhau
-            noise = torch.randn_like(resized_masks) * 0.1
-            prompt_mask = torch.clamp(resized_masks + noise, 0.0, 1.0)
+        resized_masks = F.interpolate(student_masks, size=prompt_size, mode='bilinear', align_corners=False)
+        resized_images = F.interpolate(images, size=sam_image_size, mode='bilinear', align_corners=False)
+        
+        for b in range(B):
+            curr_image = resized_images[b].unsqueeze(0) # [1, 3, 1024, 1024]
+            curr_mask = resized_masks[b].unsqueeze(0) # [1, 1, 256, 256]
             
-            # Đưa prompt mask qua bộ mã hóa của SAM
+            # 1. Encode từng ảnh một để tránh tràn VRAM trên GPU
+            curr_embedding = sam_model.image_encoder(curr_image) # [1, 256, 64, 64]
+            
+            # 2. Mở rộng prompt thành n_prompts bản sao và thêm nhiễu
+            curr_mask_expanded = curr_mask.repeat(n_prompts, 1, 1, 1) # [n_prompts, 1, 256, 256]
+            noise = torch.randn_like(curr_mask_expanded) * 0.1
+            prompt_masks = torch.clamp(curr_mask_expanded + noise, 0.0, 1.0)
+            
+            # 3. Chạy Prompt Encoder cho toàn bộ n_prompts cùng lúc
             sparse_embeds, dense_embeds = sam_model.prompt_encoder(
-                points=None, boxes=None, masks=prompt_mask
+                points=None, boxes=None, masks=prompt_masks
             )
             
-            # Giải mã
+            # 4. Giải mã: SAM sẽ tự động nhân bản curr_embedding lên n_prompts lần
             low_res_masks, _ = sam_model.mask_decoder(
-                image_embeddings=image_embeddings,
+                image_embeddings=curr_embedding,
                 image_pe=sam_model.prompt_encoder.get_dense_pe(),
                 sparse_prompt_embeddings=sparse_embeds,
                 dense_prompt_embeddings=dense_embeds,
                 multimask_output=False,
             )
             
-            # Trả về kích thước gốc [H, W] và ép xác suất [0, 1]
+            # 5. Phục hồi kích thước gốc
             mask_up = F.interpolate(low_res_masks, size=(H, W), mode='bilinear', align_corners=False)
-            sam_masks.append(torch.sigmoid(mask_up))
+            sam_masks = torch.sigmoid(mask_up) # [n_prompts, 1, H, W]
             
-    # Xếp chồng: [n_prompts, B, 1, H, W]
-    sam_masks_tensor = torch.stack(sam_masks, dim=0)
-    
-    # Tính trung bình (Nhãn giả) và phương sai (Độ bất định)
-    pseudo_labels = torch.mean(sam_masks_tensor, dim=0) # [B, 1, H, W]
-    uncertainty_maps = torch.var(sam_masks_tensor, dim=0) # [B, 1, H, W]
+            # 6. Gom kết quả của ảnh b
+            batch_pseudo_labels.append(torch.mean(sam_masks, dim=0, keepdim=True)) # [1, 1, H, W]
+            batch_uncertainties.append(torch.var(sam_masks, dim=0, keepdim=True)) # [1, 1, H, W]
+            
+    # Nối lại thành Batch hoàn chỉnh
+    pseudo_labels = torch.cat(batch_pseudo_labels, dim=0) # [B, 1, H, W]
+    uncertainty_maps = torch.cat(batch_uncertainties, dim=0) # [B, 1, H, W]
     
     return pseudo_labels, uncertainty_maps
 
