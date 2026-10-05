@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--sam_checkpoint", type=str, default="sam_vit_b.pth", help="Đường dẫn checkpoint của SAM (Generalist)")
     parser.add_argument("--epochs", type=int, default=5, help="Số lượng epochs huấn luyện")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Thiết bị tính toán")
+    parser.add_argument("--loss_type", type=str, default="bce_dice", choices=["bce_dice", "tversky"], help="Chọn hàm mất mát cho L_sup: bce_dice hoặc tversky")
     
     args = parser.parse_args()
     
@@ -82,7 +83,8 @@ def main():
             unlabeled_loader=unlabeled_loader, 
             optimizer=optimizer, 
             epochs=args.epochs, 
-            device=args.device
+            device=args.device,
+            loss_type=args.loss_type
         )
         
         # LƯU TRỮ MODEL

@@ -1,31 +1,41 @@
 import torch
 import torch.nn as nn
 
-class DiceLoss(nn.Module):
-    def __init__(self, smooth=1e-5):
+class FocalTverskyLoss(nn.Module):
+    def __init__(self, alpha=0.3, beta=0.7, gamma=2.0, smooth=1e-6):
         super().__init__()
+        self.alpha = alpha  # Trọng số phạt dự đoán sai nền thành nứt (FP)
+        self.beta = beta    # Trọng số phạt bỏ sót vết nứt (FN)
+        self.gamma = gamma  # Hệ số Focal triệt tiêu vùng nền
         self.smooth = smooth
 
-    def forward(self, probs, targets):
-        # probs đã nằm trong khoảng [0, 1]
-        probs_flat = probs.view(-1)
-        targets_flat = targets.view(-1).float() # Ép về float để nhân với probs an toàn tuyệt đối
-        intersection = (probs_flat * targets_flat).sum()
-        dice = (2. * intersection + self.smooth) / (probs_flat.sum() + targets_flat.sum() + self.smooth)
-        return 1.0 - dice
+    def forward(self, inputs, targets):
+        inputs = torch.sigmoid(inputs).view(-1)
+        targets = targets.float().view(-1)
+
+        TP = (inputs * targets).sum()
+        FP = ((1 - targets) * inputs).sum()
+        FN = (targets * (1 - inputs)).sum()
+
+        Tversky = (TP + self.smooth) / (TP + self.alpha * FP + self.beta * FN + self.smooth)
+        return (1 - Tversky) ** self.gamma
 
 class SupervisedLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, loss_type="bce_dice"):
         super().__init__()
-        self.bce = nn.BCELoss() 
-        self.dice = DiceLoss()
-
-    def forward(self, probs, targets):
-        # Đảm bảo tuyệt đối probs nằm trong đoạn (0, 1) để không bị crash CUDA
-        probs = torch.clamp(probs, min=1e-7, max=1.0 - 1e-7)
-        loss_bce = self.bce(probs, targets.float())
-        loss_dice = self.dice(probs, targets)
-        return loss_bce + loss_dice
+        self.loss_type = loss_type
+        self.bce = nn.BCEWithLogitsLoss() 
+        self.tversky = FocalTverskyLoss(alpha=0.3, beta=0.7, gamma=2.0)
+        
+    def forward(self, preds, targets):
+        if self.loss_type == "tversky":
+            return self.tversky(preds, targets)
+        else:
+            loss_bce = self.bce(preds, targets.float())
+            preds_sig = torch.sigmoid(preds)
+            intersection = (preds_sig * targets).sum()
+            dice_loss = 1 - (2. * intersection + 1e-6) / (preds_sig.sum() + targets.sum() + 1e-6)
+            return loss_bce + dice_loss
 
 class UnsupervisedConsistencyLoss(nn.Module):
     def __init__(self):

@@ -83,7 +83,7 @@ def update_ema_variables(student_model, teacher_model, alpha, global_step):
 def train_offline_semi_supervised(
     student_model, teacher_model, sam_model,
     labeled_loader, unlabeled_loader, 
-    optimizer, epochs, device
+    optimizer, epochs, device, loss_type="bce_dice"
 ):
     student_model.train()
     teacher_model.eval()
@@ -91,7 +91,7 @@ def train_offline_semi_supervised(
     for param in teacher_model.parameters():
         param.requires_grad = False
         
-    criterion_sup = SupervisedLoss().to(device)
+    criterion_sup = SupervisedLoss(loss_type=loss_type).to(device)
     criterion_unsup = UnsupervisedConsistencyLoss().to(device)
     criterion_sam = SAMGuidedSoftLoss().to(device)
     eta_s, eta_t = get_perturbations()
@@ -104,62 +104,51 @@ def train_offline_semi_supervised(
     accumulation_steps = 4
     
     for epoch in range(epochs):
-        lambda_t = get_gaussian_rampup_weight(epoch, T_ramp, lambda_max)
-        beta_t = get_gaussian_rampup_weight(epoch, T_ramp, beta_max)
+        # KHÓA CỨNG 2 NHÁNH PHI GIÁM SÁT VÀ SAM
+        lambda_t = 0.0  
+        beta_t = 0.0    
+        
         optimizer.zero_grad()
         
         for i, ((x_l, y_l), (x_u, _)) in enumerate(zip(labeled_loader, unlabeled_loader)):
             x_l, y_l, x_u = x_l.to(device), y_l.to(device), x_u.to(device)
             
-            student_model.training = False
-            
-            # [LUỒNG 1]: CÓ GIÁM SÁT
+            # [LUỒNG 1]: TÍNH TOÁN L_SUP
             outputs_l = student_model([{"image": img} for img in x_l])
-            probs_l_mask = torch.stack([out["sem_seg"] for out in outputs_l])
-            loss_sup = criterion_sup(probs_l_mask, y_l)
+            logits_l_mask = torch.stack([out["sem_seg"] for out in outputs_l])
+            loss_sup = criterion_sup(logits_l_mask, y_l)
             
-            # [LUỒNG 2]: PHI GIÁM SÁT
-            x_u_s = eta_s(x_u)
-            x_u_t = eta_t(x_u)
+            # Tắt hoàn toàn luồng tính loss_unsup và loss_sam
+            loss_unsup = torch.tensor(0.0).to(device)
+            loss_sam = torch.tensor(0.0).to(device)
             
-            outputs_u_student = student_model([{"image": img} for img in x_u_s])
-            probs_u_student = torch.stack([out["sem_seg"] for out in outputs_u_student])
-            
-            student_model.training = True
-            
-            with torch.no_grad():
-                outputs_u_teacher = teacher_model([{"image": img} for img in x_u_t])
-                probs_u_teacher = torch.stack([out["sem_seg"] for out in outputs_u_teacher])
-                
-            loss_unsup = criterion_unsup(probs_u_student, probs_u_teacher)
-            
-            # [BẮT ĐẦU LUỒNG SEMISAM+]
-            # 1. Chuyển X-quang 1 kênh sang 3 kênh cho SAM.
-            # RẤT QUAN TRỌNG: SAM phải dùng chung ảnh đã qua augmentation (x_u_s)
-            # để đảm bảo cùng hệ tọa độ không gian với mạng Student.
-            x_u_sam = x_u_s
-            
-            # 2. Ngắt Gradient của Specialist mask
-            coarse_mask = torch.clamp(probs_u_student.detach(), 1e-7, 1.0 - 1e-7)
-            
-            # 3. Sinh nhãn giả và bất định
-            sam_pseudo, sam_uncertainty = get_sam_pseudo_labels_and_uncertainty(
-                sam_model, x_u_sam, coarse_mask, n_prompts=4
-            )
-            
-            # 4. Tính L_sam
-            loss_sam = criterion_sam(probs_u_student, sam_pseudo, sam_uncertainty)
-            # [KẾT THÚC LUỒNG SEMISAM+]
-            
-            # [TỔI ƯU]
-            total_loss = (loss_sup + (lambda_t * loss_unsup) + (beta_t * loss_sam)) / accumulation_steps
+            # [TỔNG HỢP L_SUP]
+            total_loss = loss_sup / accumulation_steps
             total_loss.backward()
             
+            # [IN DEBUG THEO DÕI HỘI TỤ Ở BATCH ĐẦU TIÊN CỦA EPOCH]
+            if i == 0: 
+                with torch.no_grad():
+                    preds_prob = torch.sigmoid(logits_l_mask)
+                    pred_max = preds_prob.max().item()
+                    pred_mean = preds_prob.mean().item()
+                    target_sum = y_l.sum().item() 
+                    
+                print(f"\nEpoch [{epoch}/{epochs}] --- KIỂM TRA HỘI TỤ L_SUP ({loss_type.upper()}) ---")
+                print(f"Loss Sup: {loss_sup.item():.4f}")
+                print(f"Tổng pixel nứt thật (Target Sum): {target_sum}")
+                print(f"Xác suất dự đoán - Max: {pred_max:.4f} | Mean: {pred_mean:.4f}")
+                if pred_max < 0.1:
+                    print("⚠️ CẢNH BÁO: Mô hình đang dự đoán toàn nền đen!")
+                elif pred_max > 0.5 and target_sum == 0:
+                    print("⚠️ CẢNH BÁO: Mô hình đang đoán có nứt trên ảnh xương khỏe mạnh (FP)!")
+                print("---------------------------------------------------------")
+                
+            # [CẬP NHẬT TRỌNG SỐ GRADIENT ACCUMULATION]
             if (i + 1) % accumulation_steps == 0 or (i + 1) == len(labeled_loader):
                 optimizer.step()
                 optimizer.zero_grad()
-                
                 update_ema_variables(student_model, teacher_model, alpha_ema, global_step)
                 global_step += 1
-            
+                
         print(f"Epoch [{epoch}/{epochs}] | L_sup: {loss_sup.item():.4f} | L_unsup: {loss_unsup.item():.4f} | L_sam: {loss_sam.item():.4f} | Lambda: {lambda_t:.4f}")
