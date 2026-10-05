@@ -114,7 +114,9 @@ def train_offline_semi_supervised(
             x_l, y_l, x_u = x_l.to(device), y_l.to(device), x_u.to(device)
             
             # [LUỒNG 1]: TÍNH TOÁN L_SUP
+            student_model.training = False # Force output format to be predictions
             outputs_l = student_model([{"image": img} for img in x_l])
+            student_model.training = True # Restore training mode
             logits_l_mask = torch.stack([out["sem_seg"] for out in outputs_l])
             loss_sup = criterion_sup(logits_l_mask, y_l)
             
