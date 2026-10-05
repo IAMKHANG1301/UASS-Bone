@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 class FocalTverskyLoss(nn.Module):
-    def __init__(self, alpha=0.3, beta=0.7, gamma=2.0, smooth=1e-6):
+    def __init__(self, alpha=0.5, beta=0.5, gamma=2.0, smooth=1e-6):
         super().__init__()
         self.alpha = alpha  # Trọng số phạt dự đoán sai nền thành nứt (FP)
         self.beta = beta    # Trọng số phạt bỏ sót vết nứt (FN)
