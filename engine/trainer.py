@@ -128,22 +128,24 @@ def train_offline_semi_supervised(
             total_loss = loss_sup / accumulation_steps
             total_loss.backward()
             
-            # [IN DEBUG THEO DÕI HỘI TỤ Ở BATCH ĐẦU TIÊN CỦA EPOCH]
+            # [IN DEBUG CHẨN ĐOÁN VẬT LÝ Ở BATCH ĐẦU TIÊN]
             if i == 0: 
                 with torch.no_grad():
                     preds_prob = torch.sigmoid(logits_l_mask)
-                    pred_max = preds_prob.max().item()
-                    pred_mean = preds_prob.mean().item()
-                    target_sum = y_l.sum().item() 
                     
-                print(f"\nEpoch [{epoch}/{epochs}] --- KIỂM TRA HỘI TỤ L_SUP ({loss_type.upper()}) ---")
-                print(f"Loss Sup: {loss_sup.item():.4f}")
-                print(f"Tổng pixel nứt thật (Target Sum): {target_sum}")
-                print(f"Xác suất dự đoán - Max: {pred_max:.4f} | Mean: {pred_mean:.4f}")
-                if pred_max < 0.1:
-                    print("⚠️ CẢNH BÁO: Mô hình đang dự đoán toàn nền đen!")
-                elif pred_max > 0.5 and target_sum == 0:
-                    print("⚠️ CẢNH BÁO: Mô hình đang đoán có nứt trên ảnh xương khỏe mạnh (FP)!")
+                print(f"\nEpoch [{epoch}/{epochs}] --- CHẨN ĐOÁN VẬT LÝ MASK2FORMER ---")
+                print(f"1. Thang đo ảnh đầu vào (Image Range): Min = {x_l.min().item():.4f} | Max = {x_l.max().item():.4f}")
+                if x_l.max() <= 1.0:
+                    print("   -> ⚠️ BÁO ĐỘNG: Mask2Former có thể đang bị mù do ảnh dải 0-1. Thử nhân x_l * 255.0 trước khi nạp vào model!")
+                    
+                print(f"2. Kích thước Tensor (Shapes):")
+                print(f"   - Dự đoán (logits_l_mask): {logits_l_mask.shape}")
+                print(f"   - Nhãn thật (y_l): {y_l.shape}")
+                if logits_l_mask.shape[1] != y_l.shape[1]:
+                    print("   -> ⚠️ BÁO ĐỘNG: Lỗi chênh lệch số kênh! Hàm Loss đang bị tính sai (Broadcast Bug).")
+                    
+                print(f"3. Lỗi hội tụ (Loss): {loss_sup.item():.4f}")
+                print(f"4. Thống kê dự đoán (Preds): Max = {preds_prob.max().item():.4f} | Mean = {preds_prob.mean().item():.4f}")
                 print("---------------------------------------------------------")
                 
             # [CẬP NHẬT TRỌNG SỐ GRADIENT ACCUMULATION]
