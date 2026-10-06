@@ -10,25 +10,58 @@ from detectron2.structures import BitMasks, Instances
 
 
 def mask_to_instances(mask):
+
+    import torch
+    import numpy as np
+    from detectron2.structures import Instances
+
+    # ------------------------------------------------------------
+    # Convert Tensor → NumPy nếu cần
+    # ------------------------------------------------------------
     if isinstance(mask, torch.Tensor):
-        mask = mask.cpu().numpy()
+        mask = mask.detach().cpu().numpy()
 
     mask = np.asarray(mask)
 
+    # ------------------------------------------------------------
+    # Đảm bảo mask có dạng: [H, W]
+    # ------------------------------------------------------------
     if mask.ndim == 3:
         mask = np.squeeze(mask)
 
-    binary_mask = mask > 0
+    if mask.ndim != 2:
+        raise ValueError(f"Expected mask shape [H,W], but received {mask.shape}")
+
+    # ------------------------------------------------------------
+    # Binary segmentation
+    # 0   → background
+    # >0  → foreground
+    # ------------------------------------------------------------
+    binary_mask = (mask > 0)
     height, width = binary_mask.shape
+
+    # ------------------------------------------------------------
+    # Create Detectron2 Instances
+    # ------------------------------------------------------------
     instances = Instances(image_size=(height, width))
 
+    # ============================================================
+    # CASE 1: IMAGE KHÔNG CÓ FOREGROUND
+    # ============================================================
     if binary_mask.sum() == 0:
         instances.gt_classes = torch.empty((0,), dtype=torch.int64)
         instances.gt_masks = torch.empty((0, height, width), dtype=torch.bool)
         return instances
 
+    # ============================================================
+    # CASE 2: IMAGE CÓ FOREGROUND
+    # ============================================================
     gt_mask = torch.from_numpy(binary_mask.astype(np.bool_)).unsqueeze(0)
     instances.gt_classes = torch.zeros((1,), dtype=torch.int64)
+
+    # ============================================================
+    # CORE FIX
+    # ============================================================
     instances.gt_masks = gt_mask
 
     return instances
