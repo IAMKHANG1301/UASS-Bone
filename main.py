@@ -74,7 +74,7 @@ def main():
     print(f"Batch size: {len(first_batch)}")
     print(f"Image shape: {first_batch[0]['image'].shape}")
     print(f"Instances: {first_batch[0]['instances']}")
-    print(f"GT masks shape: {first_batch[0]['instances'].gt_masks.tensor.shape}")
+    print(f"GT masks shape: {first_batch[0]['instances'].gt_masks.shape}")
     print(f"GT classes: {first_batch[0]['instances'].gt_classes}")
 
     print("\n🔍 Testing native Mask2Former forward...")
