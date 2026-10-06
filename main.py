@@ -2,109 +2,135 @@ import os
 import sys
 import argparse
 import torch
-import copy
-from torch.utils.data import DataLoader
-
-sys.path.append('/kaggle/working/efficientvit')
-sys.path.append('/kaggle/working/Mask2Former')
-
-from detectron2.data import DatasetCatalog, MetadataCatalog 
-
+from torch.utils.data import DataLoader, Subset
+from detectron2.data import DatasetCatalog, MetadataCatalog
 from data.dataset import FracAtlasDataset, custom_collate
 from models.specialist import setup_config, build_specialist_model
-from engine.trainer import train_offline_semi_supervised
-from engine.inference import run_inference
-from segment_anything import sam_model_registry
+from engine.trainer import train_supervised
+
+sys.path.append("/kaggle/working/efficientvit")
+sys.path.append("/kaggle/working/Mask2Former")
 
 def main():
-    parser = argparse.ArgumentParser(description="Chạy Pipeline Specialist cho luận văn (Huấn luyện & Suy luận).")
-    parser.add_argument("--mode", type=str, default="train", choices=["infer", "train"], help="Chế độ chạy")
-    parser.add_argument("--image_dir", type=str, required=True, help="Đường dẫn đến thư mục chứa ảnh X-quang")
-    parser.add_argument("--mask_dir", type=str, default=None, help="Đường dẫn đến thư mục chứa ảnh mask nhãn (tuỳ chọn)")
-    parser.add_argument("--weight_path", type=str, default="specialist_teacher_model.pth", help="Đường dẫn lưu/nạp trọng số mô hình (.pth)")
-    parser.add_argument("--sam_checkpoint", type=str, default="sam_vit_b.pth", help="Đường dẫn checkpoint của SAM (Generalist)")
-    parser.add_argument("--epochs", type=int, default=5, help="Số lượng epochs huấn luyện")
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Thiết bị tính toán")
-    parser.add_argument("--loss_type", type=str, default="bce_dice", choices=["bce_dice", "tversky"], help="Chọn hàm mất mát cho L_sup: bce_dice hoặc tversky")
-    
+    parser = argparse.ArgumentParser(description="UASS-Bone supervised Mask2Former training")
+    parser.add_argument("--image_dir", type=str, required=True)
+    parser.add_argument("--mask_dir", type=str, required=True)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--batch_size", type=int, default=2)
+    parser.add_argument("--lr", type=float, default=5e-5)
+    parser.add_argument("--backbone_lr", type=float, default=5e-6)
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--overfit", action="store_true", help="Overfit a very small labeled subset to verify supervised convergence.")
+    parser.add_argument("--overfit_images", type=int, default=8)
+    parser.add_argument("--save_path", type=str, default="specialist_supervised.pth")
+
     args = parser.parse_args()
-    
+
     if "fracatlas_train" not in DatasetCatalog.list():
         DatasetCatalog.register("fracatlas_train", lambda: [])
         MetadataCatalog.get("fracatlas_train").set(
-            thing_classes=["fracture"], 
-            stuff_classes=["background"], 
+            thing_classes=["fracture"],
+            stuff_classes=["background"],
             ignore_label=255
         )
-        
-    print(f"🔄 Khởi tạo Mạng Specialist (Student) trên thiết bị: {args.device.upper()}...")
+
+    print("\n🔧 Building Mask2Former configuration...")
     cfg = setup_config()
-    specialist_model = build_specialist_model(cfg)
-    specialist_model.to(args.device)
-    
-    print(f"📂 Đang nạp dataset từ: {args.image_dir}")
-    full_dataset = FracAtlasDataset(image_dir=args.image_dir, mask_dir=args.mask_dir)
-    print(f"📊 Tổng số ảnh tìm thấy: {len(full_dataset)}")
-    
-    if args.mode == "train":
-        print("\n=======================================================")
-        print("🚀 BẮT ĐẦU GIAI ĐOẠN 3: HUẤN LUYỆN BÁN GIÁM SÁT (OFFLINE) + SAM GUIDANCE")
-        print("=======================================================")
-        
-        teacher_model = copy.deepcopy(specialist_model)
-        teacher_model.to(args.device)
-        
-        # Khởi tạo Generalist Model (SAM)
-        print(f"🧠 Khởi tạo Generalist (SAM) từ {args.sam_checkpoint}...")
-        sam_model = sam_model_registry["vit_b"](checkpoint=args.sam_checkpoint).to(args.device)
-        sam_model.eval() # Chế độ suy luận (Frozen)
-        for param in sam_model.parameters():
-            param.requires_grad = False
-        
-        # Chia dataset thành tập Labeled (20%) và Unlabeled (80%)
-        total_len = len(full_dataset)
-        labeled_len = int(0.2 * total_len)
-        unlabeled_len = total_len - labeled_len
-        labeled_dataset, unlabeled_dataset = torch.utils.data.random_split(
-            full_dataset, [labeled_len, unlabeled_len]
-        )
-        print(f"🔀 Đã chia dữ liệu: {labeled_len} Labeled | {unlabeled_len} Unlabeled")
-        
-        train_loader = DataLoader(labeled_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
-        unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
-        
-        optimizer = torch.optim.Adam(specialist_model.parameters(), lr=5e-5)
-        
-        train_offline_semi_supervised(
-            student_model=specialist_model, 
-            teacher_model=teacher_model,
-            sam_model=sam_model,
-            labeled_loader=train_loader, 
-            unlabeled_loader=unlabeled_loader, 
-            optimizer=optimizer, 
-            epochs=args.epochs, 
-            device=args.device,
-            loss_type=args.loss_type
-        )
-        
-        # LƯU TRỮ MODEL
-        # Theo lý thuyết Mean Teacher, mạng Giáo viên có tính ổn định cao hơn Học viên
-        torch.save(teacher_model.state_dict(), args.weight_path)
-        print(f"💾 Đã lưu trọng số mạng Giáo viên (Teacher) tại: {args.weight_path}")
-        print("✅ Hoàn tất Giai đoạn Offline!")
-        
-    elif args.mode == "infer":
-        print("\n=======================================================")
-        print("🚀 BẮT ĐẦU GIAI ĐOẠN 4: CHẨN ĐOÁN (ONLINE INFERENCE)")
-        print("=======================================================")
-        
-        if os.path.exists(args.weight_path):
-            print(f"📥 Đang nạp trọng số đã huấn luyện từ: {args.weight_path}")
-            specialist_model.load_state_dict(torch.load(args.weight_path, map_location=args.device, weights_only=True))
+
+    print("🧠 Building EfficientViT-B0 + Mask2Former...")
+    model = build_specialist_model(cfg)
+    model.to(args.device)
+
+    print(f"\n📂 Image directory:\n{args.image_dir}")
+    print(f"📂 Mask directory:\n{args.mask_dir}")
+
+    dataset = FracAtlasDataset(
+        image_dir=args.image_dir,
+        mask_dir=args.mask_dir,
+        transform=None
+    )
+
+    print(f"\n📊 Total images: {len(dataset)}")
+
+    if args.overfit:
+        n = min(args.overfit_images, len(dataset))
+        dataset = Subset(dataset, list(range(n)))
+        print("\n⚠️ OVERFIT DEBUG MODE")
+        print(f"Using only {n} labeled images.")
+        print("Augmentation: OFF\nTeacher: OFF\nEMA: OFF\nUnsupervised loss: OFF\nSAM loss: OFF")
+
+    train_loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=0,
+        pin_memory=args.device.startswith("cuda"),
+        collate_fn=custom_collate
+    )
+
+    print("\n🔍 Checking dataset format...")
+    first_batch = next(iter(train_loader))
+    print(f"Batch size: {len(first_batch)}")
+    print(f"Image shape: {first_batch[0]['image'].shape}")
+    print(f"Instances: {first_batch[0]['instances']}")
+    print(f"GT masks shape: {first_batch[0]['instances'].gt_masks.tensor.shape}")
+    print(f"GT classes: {first_batch[0]['instances'].gt_classes}")
+
+    print("\n🔍 Testing native Mask2Former forward...")
+    model.train()
+    with torch.enable_grad():
+        test_batch = []
+        for sample in first_batch:
+            test_sample = {
+                "image": sample["image"].to(args.device),
+                "instances": sample["instances"].to(args.device),
+                "height": sample["height"],
+                "width": sample["width"],
+                "image_id": sample["image_id"],
+            }
+            test_batch.append(test_sample)
+
+        test_loss_dict = model(test_batch)
+
+    print("\nNative Mask2Former losses:")
+    for name, value in test_loss_dict.items():
+        print(f"    {name}: {value.detach().item():.6f}")
+
+    backbone_params = []
+    head_params = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if name.startswith("backbone."):
+            backbone_params.append(param)
         else:
-            print(f"⚠️ Cảnh báo: Không tìm thấy {args.weight_path}. Đang chạy dự đoán bằng trọng số khởi tạo ngẫu nhiên!")
-            
-        run_inference(specialist_model, full_dataset, args.device)
+            head_params.append(param)
+
+    print("\n🔧 Optimizer parameter groups:")
+    print(f"Backbone parameters: {len(backbone_params)}")
+    print(f"Head parameters: {len(head_params)}")
+
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": backbone_params, "lr": args.backbone_lr},
+            {"params": head_params, "lr": args.lr}
+        ],
+        weight_decay=0.05
+    )
+
+    print("\n🚀 Starting supervised training...")
+    train_supervised(
+        student_model=model,
+        labeled_loader=train_loader,
+        optimizer=optimizer,
+        epochs=args.epochs,
+        device=args.device,
+        max_grad_norm=1.0
+    )
+
+    torch.save(model.state_dict(), args.save_path)
+    print(f"\n💾 Model saved to:\n{args.save_path}")
+    print("\n✅ SUPERVISED TRAINING COMPLETE")
 
 if __name__ == "__main__":
     main()
