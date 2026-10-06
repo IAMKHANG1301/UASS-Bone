@@ -1783,6 +1783,12 @@ def main():
     )
 
     parser.add_argument(
+        "--infer_on_train",
+        action="store_true",
+        help="[DEBUG] Run inference on the 80% TRAIN SET instead of validation."
+    )
+
+    parser.add_argument(
 
         "--output",
 
@@ -2440,13 +2446,21 @@ def main():
         #
         # Không đánh giá trên train set để tránh đánh giá
         # model bằng dữ liệu mà nó đã nhìn thấy.
+        #
+        # [DEBUG OVERRIDE]: Nếu --infer_on_train được bật,
+        # sẽ chạy đánh giá trên chính tập Train 80%.
         # ----------------------------------------------------
+
+        target_dataset = train_dataset if args.infer_on_train else val_dataset
+
+        if args.infer_on_train:
+            print("\n⚠️ [DEBUG] RUNNING INFERENCE ON 80% TRAIN SET INSTEAD OF VALIDATION!\n")
 
         run_diagnostic_inference(
 
             model=model,
 
-            dataset=val_dataset,
+            dataset=target_dataset,
 
             device=args.device,
 
