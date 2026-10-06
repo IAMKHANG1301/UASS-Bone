@@ -1,5 +1,10 @@
 import os
 import sys
+import warnings
+
+# Tắt các cảnh báo FutureWarning và UserWarning rác từ Mask2Former / PyTorch / Timm
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
 
 sys.path.append("/kaggle/working/efficientvit")
 sys.path.append("/kaggle/working/Mask2Former")
