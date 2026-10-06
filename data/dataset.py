@@ -24,12 +24,12 @@ def mask_to_instances(mask):
 
     if binary_mask.sum() == 0:
         instances.gt_classes = torch.empty((0,), dtype=torch.int64)
-        instances.gt_masks = BitMasks(torch.empty((0, height, width), dtype=torch.bool))
+        instances.gt_masks = torch.empty((0, height, width), dtype=torch.bool)
         return instances
 
     gt_mask = torch.from_numpy(binary_mask.astype(np.bool_)).unsqueeze(0)
     instances.gt_classes = torch.zeros((1,), dtype=torch.int64)
-    instances.gt_masks = BitMasks(gt_mask)
+    instances.gt_masks = gt_mask
 
     return instances
 
