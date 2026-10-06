@@ -1,5 +1,9 @@
 import os
 import sys
+
+sys.path.append("/kaggle/working/efficientvit")
+sys.path.append("/kaggle/working/Mask2Former")
+
 import argparse
 import torch
 from torch.utils.data import DataLoader, Subset
@@ -7,9 +11,6 @@ from detectron2.data import DatasetCatalog, MetadataCatalog
 from data.dataset import FracAtlasDataset, custom_collate
 from models.specialist import setup_config, build_specialist_model
 from engine.trainer import train_supervised
-
-sys.path.append("/kaggle/working/efficientvit")
-sys.path.append("/kaggle/working/Mask2Former")
 
 def main():
     parser = argparse.ArgumentParser(description="UASS-Bone supervised Mask2Former training")
