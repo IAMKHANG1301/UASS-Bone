@@ -423,85 +423,164 @@ def get_prediction(
     model,
     sample,
     device,
-    threshold=0.5
+    threshold=0.5,
+    query_threshold=0.5
 ):
 
-    sample_input = {
+    from detectron2.structures import ImageList
+    import torch.nn.functional as F
 
-        "image":
-            sample["image"].to(device),
+    image = sample["image"].to(device)
 
-        "height":
-            sample["height"],
+    height = sample["height"]
+    width = sample["width"]
 
-        "width":
-            sample["width"]
-    }
+    # ----------------------------------------------------
+    # MASK2FORMER PREPROCESSING
+    # ----------------------------------------------------
 
-    outputs = model(
-        [sample_input]
+    image = (
+        image - model.pixel_mean
+    ) / model.pixel_std
+
+    images = ImageList.from_tensors(
+        [image],
+        model.size_divisibility
     )
 
-    sem_seg = outputs[0][
-        "sem_seg"
+    # ----------------------------------------------------
+    # BACKBONE
+    # ----------------------------------------------------
+
+    features = model.backbone(
+        images.tensor
+    )
+
+    # ----------------------------------------------------
+    # MASK2FORMER HEAD
+    # ----------------------------------------------------
+
+    outputs = model.sem_seg_head(
+        features
+    )
+
+    pred_logits = outputs[
+        "pred_logits"
+    ][0]
+
+    pred_masks = outputs[
+        "pred_masks"
+    ][0]
+
+    # ----------------------------------------------------
+    # CLASS PROBABILITY
+    #
+    # [fracture, no-object]
+    # ----------------------------------------------------
+
+    class_probs = F.softmax(
+        pred_logits,
+        dim=-1
+    )
+
+    fracture_probs = class_probs[:, 0]
+
+    # ----------------------------------------------------
+    # BEST FRACTURE QUERY
+    #
+    # Dataset chỉ có tối đa 1 fracture instance/image
+    # ----------------------------------------------------
+
+    best_query = torch.argmax(
+        fracture_probs
+    )
+
+    best_class_prob = fracture_probs[
+        best_query
     ]
 
-    # --------------------------------------------------------
-    # sem_seg có thể là logits hoặc score tùy implementation.
-    #
-    # Native Mask2Former semantic inference thường trả
-    # class-mask combination.
-    #
-    # Đối với binary class:
-    #   foreground score = sem_seg[0]
-    # --------------------------------------------------------
+    # ----------------------------------------------------
+    # NO FRACTURE
+    # ----------------------------------------------------
 
-    pred_score = (
-        sem_seg[0]
-        .detach()
-        .float()
-        .cpu()
-        .numpy()
-    )
+    if best_class_prob < query_threshold:
 
-    # --------------------------------------------------------
-    # Nếu output chưa nằm trong [0,1], dùng sigmoid.
-    #
-    # Nếu đã là probability thì giữ nguyên.
-    # --------------------------------------------------------
-
-    if (
-        pred_score.min() < 0.0
-        or pred_score.max() > 1.0
-    ):
-
-        pred_prob = (
-            1.0
-            /
-            (
-                1.0
-                +
-                np.exp(
-                    -np.clip(
-                        pred_score,
-                        -50,
-                        50
-                    )
-                )
-            )
+        pred_prob = torch.zeros(
+            (height, width),
+            dtype=torch.float32,
+            device=device
         )
 
-    else:
+        pred_mask = torch.zeros(
+            (height, width),
+            dtype=torch.bool,
+            device=device
+        )
 
-        pred_prob = pred_score
+        return (
+            pred_prob.cpu().numpy(),
+            pred_mask.cpu().numpy()
+        )
+
+    # ----------------------------------------------------
+    # RAW MASK LOGITS
+    # ----------------------------------------------------
+
+    mask_logits = pred_masks[
+        best_query
+    ]
+
+    # ----------------------------------------------------
+    # SIGMOID
+    #
+    # Đây mới là sigmoid đúng chỗ.
+    # pred_masks là raw mask logits.
+    # ----------------------------------------------------
+
+    mask_prob = torch.sigmoid(
+        mask_logits
+    )
+
+    # ----------------------------------------------------
+    # UPSAMPLE
+    # ----------------------------------------------------
+
+    mask_prob = F.interpolate(
+        mask_prob[None, None],
+        size=(
+            images.tensor.shape[-2],
+            images.tensor.shape[-1]
+        ),
+        mode="bilinear",
+        align_corners=False
+    )[0, 0]
+
+    # ----------------------------------------------------
+    # REMOVE PADDING
+    # ----------------------------------------------------
+
+    mask_prob = mask_prob[
+        :height,
+        :width
+    ]
+
+    # ----------------------------------------------------
+    # BINARY MASK
+    # ----------------------------------------------------
 
     pred_mask = (
-        pred_prob >= threshold
+        mask_prob >= threshold
     )
 
     return (
-        pred_prob,
-        pred_mask
+        mask_prob.detach()
+        .float()
+        .cpu()
+        .numpy(),
+
+        pred_mask.detach()
+        .cpu()
+        .numpy()
     )
 
 
@@ -1628,7 +1707,7 @@ def main():
 
         type=float,
 
-        default=5e-5
+        default=1e-4
     )
 
     parser.add_argument(
@@ -1637,7 +1716,7 @@ def main():
 
         type=float,
 
-        default=5e-6
+        default=1e-5
     )
 
 

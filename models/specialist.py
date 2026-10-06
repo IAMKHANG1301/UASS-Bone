@@ -255,6 +255,8 @@ def setup_config():
 
     cfg.MODEL.MASK_FORMER.DIM_FEEDFORWARD = 2048
 
+    cfg.MODEL.MASK_FORMER.DEC_LAYERS = 10
+
     cfg.MODEL.MASK_FORMER.PRE_NORM = False
 
 
