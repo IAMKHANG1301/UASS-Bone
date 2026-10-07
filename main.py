@@ -825,6 +825,42 @@ def calculate_metrics(
 
 
 # ============================================================
+# EVALUATE VALIDATION DICE
+# ============================================================
+
+def evaluate_validation_dice(
+    model,
+    dataset,
+    device
+):
+    import torch
+    
+    with torch.no_grad():
+        total_dice = 0.0
+        
+        for local_idx in range(len(dataset)):
+            sample = dataset[local_idx]
+            gt_mask = get_gt_mask(sample)
+            
+            _, pred_mask = get_prediction(
+                model=model,
+                sample=sample,
+                device=device,
+                threshold=0.5
+            )
+            
+            metrics = calculate_metrics(
+                pred_mask=pred_mask,
+                gt_mask=gt_mask
+            )
+            
+            total_dice += metrics["dice"]
+            
+        mean_dice = total_dice / max(len(dataset), 1)
+        return mean_dice
+
+
+# ============================================================
 # INFERENCE + DIAGNOSTICS
 #
 # Chạy trên VALIDATION SET.
@@ -2264,28 +2300,13 @@ def main():
 
             device=args.device,
 
-            max_grad_norm=1.0
-        )
-
-
-        # ----------------------------------------------------
-        # SAVE
-        # ----------------------------------------------------
-
-        torch.save(
-
-            model.state_dict(),
-
-            args.save_path
-        )
-
-        print()
-        print(
-            "💾 Model saved:"
-        )
-
-        print(
-            f"    {args.save_path}"
+            max_grad_norm=1.0,
+            
+            val_dataset=val_dataset,
+            
+            eval_fn=evaluate_validation_dice,
+            
+            save_path=args.save_path
         )
 
         print()
@@ -2458,30 +2479,15 @@ def main():
 
             device=args.device,
 
-            max_grad_norm=1.0
+            max_grad_norm=1.0,
+            
+            val_dataset=val_dataset,
+            
+            eval_fn=evaluate_validation_dice,
+            
+            save_path=args.save_path
         )
 
-
-        # ----------------------------------------------------
-        # SAVE FINE-TUNED MODEL
-        # ----------------------------------------------------
-
-        torch.save(
-
-            model.state_dict(),
-
-            args.save_path
-        )
-
-
-        print()
-        print(
-            "💾 Fine-tuned model saved:"
-        )
-
-        print(
-            f"    {args.save_path}"
-        )
 
         print()
         print(

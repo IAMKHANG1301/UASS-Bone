@@ -7,7 +7,10 @@ def train_supervised(
     optimizer,
     epochs,
     device,
-    max_grad_norm=1.0
+    max_grad_norm=1.0,
+    val_dataset=None,
+    eval_fn=None,
+    save_path="specialist_supervised.pth"
 ):
 
     print()
@@ -26,6 +29,8 @@ def train_supervised(
     current_iteration = 0
 
     poly_power = 0.9
+    
+    best_val_dice = -1.0
 
     for epoch in range(epochs):
 
@@ -71,9 +76,10 @@ def train_supervised(
                 max(total_iterations - 1, 1)
             )
 
-            lr_multiplier = (
-                (1.0 - progress)
-                ** poly_power
+            # Giữ LR không bao giờ rớt xuống 0 hoàn toàn (min 1% of initial LR)
+            lr_multiplier = max(
+                (1.0 - progress) ** poly_power,
+                0.01
             )
 
             for param_group in optimizer.param_groups:
@@ -216,6 +222,29 @@ def train_supervised(
                 f"    pre-clip grad_norm="
                 f"{last_grad_norm:.4f}"
             )
+            
+        # ----------------------------------------------
+        # VALIDATION & SAVE
+        # ----------------------------------------------
+        
+        if val_dataset is not None and eval_fn is not None:
+            # Switch to eval mode
+            student_model.eval()
+            val_dice = eval_fn(student_model, val_dataset, device)
+            # Revert back to train mode
+            student_model.train()
+            
+            print(f"    val_dice={val_dice:.6f}")
+            
+            if val_dice > best_val_dice:
+                best_val_dice = val_dice
+                print(f"    🌟 New best val_dice: {best_val_dice:.6f}! Saving model to {save_path}...")
+                torch.save(student_model.state_dict(), save_path)
+            else:
+                print(f"    (Best val_dice was {best_val_dice:.6f})")
+        else:
+            # Fallback: save last epoch
+            torch.save(student_model.state_dict(), save_path)
             
         print()
 
