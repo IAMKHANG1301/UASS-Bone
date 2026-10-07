@@ -1911,7 +1911,7 @@ def main():
         type=str,
 
         default=
-        "mask2former_diagnostics.png"
+        "diagnostics.png"
     )
 
 
