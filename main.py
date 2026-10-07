@@ -36,6 +36,9 @@ sys.path.append(
 # IMPORT
 # ============================================================
 
+import matplotlib
+matplotlib.use("Agg")
+
 import argparse
 
 import numpy as np
@@ -1476,8 +1479,6 @@ def run_diagnostic_inference(
     print(
         f"   {output_filename}"
     )
-
-    plt.show()
 
     plt.close(fig)
 
