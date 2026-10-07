@@ -834,7 +834,8 @@ def calculate_metrics(
 def evaluate_validation_dice(
     model,
     dataset,
-    device
+    device,
+    threshold=0.5
 ):
     import torch
     
@@ -849,7 +850,7 @@ def evaluate_validation_dice(
                 model=model,
                 sample=sample,
                 device=device,
-                threshold=0.5
+                threshold=threshold
             )
             
             metrics = calculate_metrics(
@@ -2305,7 +2306,7 @@ def main():
             
             val_dataset=val_dataset,
             
-            eval_fn=evaluate_validation_dice,
+            eval_fn=lambda m, d, dev: evaluate_validation_dice(m, d, dev, threshold=args.threshold),
             
             save_path=args.save_path
         )
@@ -2484,7 +2485,7 @@ def main():
             
             val_dataset=val_dataset,
             
-            eval_fn=evaluate_validation_dice,
+            eval_fn=lambda m, d, dev: evaluate_validation_dice(m, d, dev, threshold=args.threshold),
             
             save_path=args.save_path
         )
